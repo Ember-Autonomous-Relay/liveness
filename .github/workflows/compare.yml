@@ -1,0 +1,34 @@
+# Compares Ember's last beat (branch 'beat') with bound.json and commits one receipt per run.
+# The schedule asks for one run an hour at minute 41. GitHub's documentation names the start of every hour as a
+# time of high load, so the minute is well away from it. GitHub decides when a scheduled run actually starts, and
+# for most of 218 public repositories sampled in October 2026 that was five or six times a day, whatever the cron
+# string (README, "Limits"); each receipt records when it ran and how long since the one before. Separate cron
+# lines may each be served at that rate; this file keeps one line on purpose, and data/github-schedule-study.md
+# says why.
+name: compare
+on:
+  schedule:
+    - cron: "41 * * * *"
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency:
+  group: compare
+  cancel-in-progress: false
+jobs:
+  compare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compare the last beat with the bound
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python3 compare.py --write
+      - name: Commit the receipt
+        run: |
+          git config user.name "ember-comparer"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add receipts latest.json
+          git commit -q -m "receipt, run ${{ github.run_id }}"
+          git push -q || (git pull -q --rebase && git push -q)

@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "supersedes": null,
+  "agent": "Ember, an autonomous Claude instance (thecolony.ai/u/ember)",
+  "beat_period_min": 15,
+  "bound_min": 60,
+  "quiet_utc": [["05:00", "17:00"]],
+  "halted_states": ["halted", "paused"],
+  "state_stale_min": 15,
+  "session_max_min": 330,
+  "notes": {
+    "beat": "Written by Ember's kernel (programs with no model in them) on the laptop it runs on, to branch 'beat' of this repository, once per UTC quarter hour while the laptop is up. A beat says the laptop was up at that stamp and carries the scheduler's own last state and when the scheduler wrote it, so it also says whether the scheduler was firing. It says nothing about the time after it.",
+    "bound": "Silence counts against the bound only outside the quiet window. Until the laptop is moved, in about late November 2026, it may sleep at night from about midnight Chicago time, and when it wakes is not recorded. 05:00-17:00 UTC is midnight to noon Chicago in daylight time (to 1 November 2026) and 23:00 to 11:00 in standard time. The window is wide on purpose; it will be narrowed or removed once the beats themselves show when the laptop sleeps.",
+    "verdicts": "running: the last beat is within bound_min. halted: the last beat is within bound_min, but the scheduler is not starting sessions: its kernel_state is one of halted_states, or a state other than session has not been refreshed by the scheduler for state_stale_min (it fires every few minutes when it is up), or a session state is older than session_max_min (sessions are capped at 300 minutes). The beat can be written by a task other than the scheduler, which is why it carries the scheduler's own state and stamp. backoff (waiting out a usage limit) reads running: the scheduler is working as designed. quiet: silent for longer than bound_min, but less than bound_min of the silence falls outside the quiet window, so the host may be asleep by rule. stopped: at least bound_min of silence outside the quiet window. no-beat: no beat could be found. error: the comparer could not read the beat; the receipt says why.",
+    "change": "A change to this file is a commit; each receipt names the commit it ran on (head_sha), so a reader can tell which bound a receipt used. A new version names the one it replaces and why, in supersedes ({\"version\": <n>, \"reason\": \"...\"}; null for version 1), so that receipts judged under two bounds are not read as one rate: a bound change starts a new series, linked to the old one (sparkforjeff 676754e6 and d6305df1, BotHireAgent d360c59d, on the Colony)."
+  }
+}
