@@ -318,8 +318,33 @@ def stopped_after(start: dt.datetime, end: dt.datetime, bound: dict) -> dt.datet
 
 
 BEAT_GAP_FIELDS = ("beat_gaps", "beat_gaps_n", "beat_gap_max_min", "beat_gaps_error", "beat_gaps_unread_from",
+                   "beat_gaps_unread_from_time", "beat_gaps_carried_n", "beat_gaps_read", "beat_gaps_reach",
                    "beat_gaps_log_from", "beat_gaps_log_margin_n", "beat_gaps_hole")
 NO_SHA = "0" * 40
+
+
+def start_time(prev: dict | None, start: str | None) -> str | None:
+    """The GitHub time of the beat the gaps start from, when a receipt holds it: carried beside the commit from the run
+    that first carried it, or the previous receipt's own beat (Fieldnotes, 0de2b1ca on the Colony). None when neither
+    holds it, as on a receipt written before the time was carried, or when what is there is not a time."""
+    p = prev or {}
+    pb = p.get("beat") or {}
+    when = p.get("beat_gaps_unread_from_time") if start and p.get("beat_gaps_unread_from") == start else None
+    if when is None and start and pb.get("commit") == start:
+        when = pb.get("github_time")
+    try:
+        return when if isinstance(when, str) and parse(when) else None
+    except (ValueError, OverflowError):  # a year out of range after the zone is applied overflows
+        return None
+
+
+def carry(out: dict, prev: dict | None, start: str, when: str | None) -> dict:
+    """out with the beat to start from passed to the next run: its commit, its time, and how many receipts in a row,
+    this one included, have carried it (Fieldnotes, 078a2987 on the Colony)."""
+    p = prev or {}
+    n = p.get("beat_gaps_carried_n") if p.get("beat_gaps_unread_from") == start else 0
+    return dict(out, beat_gaps_unread_from=start, beat_gaps_unread_from_time=when,
+                beat_gaps_carried_n=(n if _count(n) and n > 0 else 0) + 1)
 
 
 def beat_gaps(repo: str, token: str | None, prev: dict | None, beat: dict | None, bound: dict, fetch=api, window_for=None,
@@ -328,7 +353,8 @@ def beat_gaps(repo: str, token: str | None, prev: dict | None, beat: dict | None
     read from GitHub's activity log for branch 'beat' (one entry per update of the branch, with GitHub's own stamp).
     With log (the updates quiet_window read for the fit, oldest first: about 9 days, or the whole log), the gaps are
     counted from that; without it, from one call, the newest 100 updates (Fieldnotes, 9b167290). An empty log means
-    the fit's read failed, so a start not in the one call is carried to the next run, not counted as a hole. beat_gaps lists each gap longer than bound_min with both ends, its silence,
+    the fit's read failed, so a start not in the one call is carried to the next run, not counted as a hole, unless
+    it is older than beat_gaps_reach (below). beat_gaps lists each gap longer than bound_min with both ends, its silence,
     the part outside the quiet windows, the verdict it had reached when it ended and when it first read stopped;
     beat_gaps_n counts the gaps of any length and beat_gap_max_min is the longest. If they cannot be read, those
     fields are null and beat_gaps_error says why; the verdict does not depend on them. A run that could not read
@@ -339,43 +365,76 @@ def beat_gaps(repo: str, token: str | None, prev: dict | None, beat: dict | None
     Whenever the log was read, beat_gaps_log_from is the stamp of the oldest update in what was read, and on a
     read that found the beat to start from, beat_gaps_log_margin_n is the number of updates read that are older
     than it: how near that beat came to falling out of the read (Fieldnotes, 2339a7f6 on the Colony). If it had
-    fallen out, beat_gaps_hole says which stretch no receipt will count: from that beat to this run's beat."""
-    out = dict.fromkeys(BEAT_GAP_FIELDS)
+    fallen out, beat_gaps_hole says which stretch no receipt will count: from that beat to this run's beat.
+    beat_gaps_read says which read the gaps were counted from (Fieldnotes, 078a2987): the long read or the one call,
+    with the number of updates it held. A carried start keeps its GitHub time in beat_gaps_unread_from_time, from
+    the receipt that first carried it, and beat_gaps_carried_n counts the receipts in a row that have carried it, so
+    a receipt shows how old the uncounted stretch is, and a hole after a carry is dated. Under a bound with quiet_fit,
+    beat_gaps_reach is how far back a working long read is sure to reach on this run: `days` whole days before the
+    day of the oldest of the newest 100 updates, which is where read_log stops. The gaps are counted only from a
+    start at or after it, whichever read this run made, so a run whose long read failed and a run whose read worked
+    draw the line in the same place: a start older than the reach is a hole, dated from its carried time, on the
+    first run that computes the reach and finds its own beat in the log, and is not carried on (Fieldnotes,
+    0de2b1ca). A run that read the start judges it by the log's stamp; a run that did not has only the commit's
+    date, which can be seconds earlier, or days for a branch restored to an old commit, so near the reach the two
+    can still differ by that much. With no usable `days`, there is no reach, as under fixed hours."""
+    out = dict(dict.fromkeys(BEAT_GAP_FIELDS), beat_gaps_carried_n=0)
     carried = (prev or {}).get("beat_gaps_unread_from")
     start = carried if isinstance(carried, str) and carried else ((prev or {}).get("beat") or {}).get("commit")
+    when = start_time(prev, start)
     if not beat:
-        return dict(out, beat_gaps_error="no beat on this run", beat_gaps_unread_from=start)
+        out["beat_gaps_error"] = "no beat on this run"
+        return carry(out, prev, start, when) if start else out
     if not start:
         return dict(out, beat_gaps_error="no beat on the previous receipt to start from")
     if start == beat["commit"]:  # no update since; the silence still open is the verdict's
         return dict(out, beat_gaps=[], beat_gaps_n=0)
+    try:  # the fit's `days`, which quiet_fit_error reports when it cannot be used
+        days = int(bound["quiet_fit"]["days"]) if log is not None and bound.get("quiet_fit") is not None else None
+    except (KeyError, TypeError, ValueError):
+        days = None
+
+    def hole(t_from, to, why):
+        # none of the stretch is counted, the part still in the read included: a count from there would be short;
+        # the next run starts from this run's beat
+        return dict(out, beat_gaps_hole={"from_commit": start, "from": t_from, "to": to}, beat_gaps_error=why)
     try:
         if log:
-            how, served = f"the quiet fit's read, {len(log)} updates", log
+            how, served, read = f"the quiet fit's read, {len(log)} updates", log, "long read"
         else:  # served newest first
-            how, served = "one call, up to 100 updates", list(reversed(fetch("/activity?ref=refs/heads/beat&per_page=100", token, repo)))
+            how, served, read = "one call, up to 100 updates", list(reversed(fetch("/activity?ref=refs/heads/beat&per_page=100", token, repo))), "one call"
         rows = [r for r in served if r["after"] != NO_SHA]  # a deletion is no beat
+        out["beat_gaps_read"] = {"by": read, "updates": len(served)}
         out["beat_gaps_log_from"] = rows[0]["timestamp"] if rows else None
+        reach = None
+        if days is not None and served:  # the oldest of the newest 100 is the long read's first page's last entry,
+            # as GitHub serves full pages of 100 before the last
+            reach = midnight(parse(served[max(0, len(served) - 100)]["timestamp"])) - days * DAY
+            out["beat_gaps_reach"] = iso(reach)
         shas = [r["after"] for r in rows]
         if beat["commit"] not in shas:
             raise LookupError(f"this run's beat {beat['commit'][:12]} is not in the log yet")
         j = len(shas) - 1 - shas[::-1].index(beat["commit"])
         if start in shas[j + 1:]:
             raise LookupError(f"the beat to start from ({start[:12]}) is newer in the log than this run's beat")
+        past = f"older than {iso(reach)}, as far back as the quiet fit's read is sure to reach on this run" if reach else ""
         if start not in shas[:j]:
-            if log is not None and not log:  # the fit's read failed: the start may be in it next run, so it is carried
-                raise LookupError(f"the beat the gaps start from ({start[:12]}) is not among the {j} updates before this run's"
-                                  f" beat in one call, and the quiet fit's read of the log failed (see quiet_fit_error)")
-            out["beat_gaps_unread_from"] = None  # gone from the window for good: the next run starts from this beat
-            pb = (prev or {}).get("beat") or {}
-            # none of the stretch is counted, the part still in the read included: a count from there would be short
-            out["beat_gaps_hole"] = {"from_commit": start, "from": pb.get("github_time") if pb.get("commit") == start else None,
-                                     "to": rows[j]["timestamp"]}
-            return dict(out, beat_gaps_error=f"the beat the gaps start from ({start[:12]}) is not among the {j} updates"
+            if log is not None and not log:  # the fit's read failed: the start may be in it next run, so it is carried,
+                if not (reach and when and parse(when) < reach):  # unless that read would not reach it either
+                    raise LookupError(f"the beat the gaps start from ({start[:12]}) is not among the {j} updates before this"
+                                      f" run's beat in one call, and the quiet fit's read of the log failed (see quiet_fit_error)")
+                return hole(when, rows[j]["timestamp"], f"the beat the gaps start from ({start[:12]}, at {when}) is not among the"
+                            f" {j} updates before this run's beat in one call, the quiet fit's read of the log failed (see"
+                            f" quiet_fit_error), and it is {past}; see beat_gaps_hole")
+            return hole(when, rows[j]["timestamp"], f"the beat the gaps start from ({start[:12]}) is not among the {j} updates"
                         f" before this run's beat in what was read of the log ({how}), which goes back"
                         f" to {rows[0]['timestamp']}; see beat_gaps_hole")
         i = j - 1 - shas[:j][::-1].index(start)
         out["beat_gaps_log_margin_n"] = i
+        logged = rows[i]["timestamp"]
+        if reach and parse(logged) < reach:  # in what was read, but where a failed read would have left it
+            return hole(when or logged, rows[j]["timestamp"], f"the beat the gaps start from ({start[:12]}, logged at {logged})"
+                        f" is {past}; see beat_gaps_hole")
         span = rows[i:j + 1]
         for a, b in zip(span, span[1:]):
             # an update missing from the log would join two gaps into one; a re-created branch starts afresh
@@ -403,7 +462,7 @@ def beat_gaps(repo: str, token: str | None, prev: dict | None, beat: dict | None
                                **({"quiet_utc": gb["quiet_utc"]} if window_for is not None else {})})
         return dict(out, beat_gaps=listed, beat_gaps_n=len(span) - 1, beat_gap_max_min=longest)
     except Exception as e:  # the receipt is still written, with the reason, as for scheduled_gaps
-        return dict(out, beat_gaps_error=f"{type(e).__name__}: {e}"[:300], beat_gaps_unread_from=start)
+        return carry(dict(out, beat_gaps_error=f"{type(e).__name__}: {e}"[:300]), prev, start, when)
 
 
 # ---- the quiet window, fitted from the beat record by the rule in bound.json's quiet_fit ----
@@ -550,19 +609,33 @@ ENDED_FIELDS = ("ended_silences", "ended_silences_error")
 VERDICTS_AT_END = ("stopped", "quiet", "unknown")
 
 
-ENDED_LIMITS = ("each silence in stopped_n was a sleep the window missed or a stop that ended, and the count cannot tell which;"
-                 " quiet_n may hold stops the window absorbed, so the counts can show the window too narrow but not too wide;"
-                 " stopped_outages_n are the silences in stopped_n longer than longest_sleep_min, taken as outages, so however"
-                 " often they recurred they would never widen the window; a silence that has not ended is not counted")
+ENDED_LIMITS = ("each silence in stopped_then_ended_n was a sleep the window missed or a stop that ended, and the count cannot"
+                " tell which; quiet_then_ended_n may hold stops the window absorbed, so the counts can show the window too"
+                " narrow but not too wide; stopped_then_ended_outages_n are the silences in stopped_then_ended_n longer than"
+                " longest_sleep_min, taken as outages, so however often they recurred they would never widen the window;"
+                " a silence that has not ended is not counted")
+
+# the direction the counts cannot see, printed under them (Ember's proposal in 366146e8), with rushipingan's words (e6b37711)
+ENDED_BLIND_SPOT = ("these counts see one direction only. A silence read quiet whose writer has died never ends in a beat,"
+                    " so no count can show that quiet was wrong, and quiet_then_dead_n is null on every receipt; the verdict"
+                    " still turns stopped once bound_min of the silence falls outside the window, but no count ever shows"
+                    " that the time it read quiet was a death. In rushipingan's words (comment e6b37711 on the"
+                    " Colony): \"false-stopped direction only; quiet-then-dead is unobservable by construction\", and \"a"
+                    " rule that watches for silence can be caught oversleeping the living; it can never be caught sleeping"
+                    " through the dead.\"")
 
 
 def ended_silences(root: pathlib.Path, now: dt.datetime, beat: dict | None, bound: dict, bgaps: dict | None) -> dict:
     """How the comparer judged the silences that ended in a beat on the days the fit draws on: the `days` whole UTC
     days before the day of the beat this run read (of now, if it read none). Counted from the beat_gaps entries on
     the receipts in receipts/*.jsonl judged under this bound's version, then this run's, whose silence ended (`to`)
-    on those days, each silence once, as first listed: stopped_n, quiet_n and unknown_n by verdict_at_end, and
-    stopped_outages_n, those in stopped_n longer than longest_sleep_min, which the fit takes as outages, so their
-    recurring would never widen the window. These are silences, not
+    on those days, each silence once, as first listed: stopped_then_ended_n, quiet_then_ended_n and
+    unknown_then_ended_n by verdict_at_end, and stopped_then_ended_outages_n, those in stopped_then_ended_n longer than
+    longest_sleep_min, which the fit takes as outages, so their recurring would never widen the window. The names
+    say what is seen: a silence and the beat that ended it (rushipingan asked for a name that shows the blind spot,
+    e6b37711). A quiet silence whose writer had died never ends, so quiet_then_dead_n is null on every receipt, and
+    ENDED_BLIND_SPOT, quoting rushipingan, prints under the counts why (the code before this change named the counts
+    stopped_n, quiet_n, unknown_n and stopped_outages_n). These are silences, not
     readings: verdict_at_end is what a silence had reached when a beat ended it, which no run may have read at the
     time. rushipingan asked for a count printed on every receipt that gives the window's failures an owner, since
     no refit date does (65110ba3 on the Colony); its limits are printed with it (ENDED_LIMITS). holes_n counts the
@@ -618,7 +691,10 @@ def ended_silences(root: pathlib.Path, now: dt.datetime, beat: dict | None, boun
                     holes.add((hole.get("from_commit"), hole.get("from"), hole["to"]))
     except Exception as e:  # the receipt is still written, with the reason, as for scheduled_gaps
         return {"ended_silences": None, "ended_silences_error": f"{where}: {type(e).__name__}: {e}"[:300]}
-    return {"ended_silences": {"from": iso(lo), "to": iso(hi), **{f"{v}_n": counts[v] for v in counts},
+    return {"ended_silences": {"from": iso(lo), "to": iso(hi), "stopped_then_ended_n": counts["stopped"],
+                               "stopped_then_ended_outages_n": counts["stopped_outages"],
+                               "quiet_then_ended_n": counts["quiet"], "unknown_then_ended_n": counts["unknown"],
+                               "quiet_then_dead_n": None, "blind_spot": ENDED_BLIND_SPOT,
                                "holes_n": len(holes), "series_from": iso(first), "limits": ENDED_LIMITS},
             "ended_silences_error": None}
 
@@ -702,8 +778,8 @@ def run(root: pathlib.Path, env: dict, now: dt.datetime | None = None, fetch=api
         return build_receipt(now, bound, beat, error, prev, env, sha, gaps, bgaps, qwin, ended)
     except Exception as e:  # after check_beat and last_receipt, most likely a bound.json value; still a receipt
         error = ((error + "; ") if error else "") + f"could not build the receipt: {type(e).__name__}: {e}"
-        if beat and not bgaps["beat_gaps_unread_from"]:  # this receipt will not show the beat, so keep where to start
-            bgaps = dict(bgaps, beat_gaps_unread_from=beat["commit"])
+        if beat and not bgaps["beat_gaps_unread_from"]:  # this receipt will not show the beat, so keep where to start,
+            bgaps = carry(bgaps, prev, beat["commit"], beat.get("github_time"))  # and when it was (Fieldnotes, 0de2b1ca)
         return build_receipt(now, bound, None, error[:300], None, env, sha, gaps, bgaps, qwin, ended)
 
 
