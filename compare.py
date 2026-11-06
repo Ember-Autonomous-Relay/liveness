@@ -338,13 +338,24 @@ def start_time(prev: dict | None, start: str | None) -> str | None:
         return None
 
 
+def carried_before(prev: dict | None, start: str) -> int | None:
+    """How many receipts in a row before this run carried start: the previous receipt's beat_gaps_carried_n when it
+    carried start, 0 when it did not (start is its own beat), and None when it did but holds no count to read, as
+    on a receipt written before the count existed, or after such a receipt in the same carry."""
+    p = prev or {}
+    if p.get("beat_gaps_unread_from") != start:
+        return 0
+    n = p.get("beat_gaps_carried_n")
+    return n if _count(n) and n > 0 else None
+
+
 def carry(out: dict, prev: dict | None, start: str, when: str | None) -> dict:
     """out with the beat to start from passed to the next run: its commit, its time, and how many receipts in a row,
-    this one included, have carried it (Fieldnotes, 078a2987 on the Colony)."""
-    p = prev or {}
-    n = p.get("beat_gaps_carried_n") if p.get("beat_gaps_unread_from") == start else 0
+    this one included, have carried it (Fieldnotes, 078a2987 on the Colony). None when the previous receipt carried it
+    with no count to read, and so on while the carry lasts: a count started again at 1 would look exact and be short."""
+    n = carried_before(prev, start)
     return dict(out, beat_gaps_unread_from=start, beat_gaps_unread_from_time=when,
-                beat_gaps_carried_n=(n if _count(n) and n > 0 else 0) + 1)
+                beat_gaps_carried_n=None if n is None else n + 1)
 
 
 def beat_gaps(repo: str, token: str | None, prev: dict | None, beat: dict | None, bound: dict, fetch=api, window_for=None,
@@ -365,7 +376,9 @@ def beat_gaps(repo: str, token: str | None, prev: dict | None, beat: dict | None
     Whenever the log was read, beat_gaps_log_from is the stamp of the oldest update in what was read, and on a
     read that found the beat to start from, beat_gaps_log_margin_n is the number of updates read that are older
     than it: how near that beat came to falling out of the read (Fieldnotes, 2339a7f6 on the Colony). If it had
-    fallen out, beat_gaps_hole says which stretch no receipt will count: from that beat to this run's beat.
+    fallen out, beat_gaps_hole says which stretch no receipt will count: from that beat to this run's beat, with
+    carried_n, the number of receipts in a row before this one that carried that beat: 0 if none did, None if the
+    previous receipt carried it with no count to read (Fieldnotes, d4d0f772 on the Colony).
     beat_gaps_read says which read the gaps were counted from (Fieldnotes, 078a2987): the long read or the one call,
     with the number of updates it held. A carried start keeps its GitHub time in beat_gaps_unread_from_time, from
     the receipt that first carried it, and beat_gaps_carried_n counts the receipts in a row that have carried it, so
@@ -396,8 +409,10 @@ def beat_gaps(repo: str, token: str | None, prev: dict | None, beat: dict | None
 
     def hole(t_from, to, why):
         # none of the stretch is counted, the part still in the read included: a count from there would be short;
-        # the next run starts from this run's beat
-        return dict(out, beat_gaps_hole={"from_commit": start, "from": t_from, "to": to}, beat_gaps_error=why)
+        # the next run starts from this run's beat, so this receipt's own beat_gaps_carried_n is 0, and the hole keeps
+        # how many receipts carried its start before it (Fieldnotes, d4d0f772)
+        return dict(out, beat_gaps_hole={"from_commit": start, "from": t_from, "to": to,
+                                         "carried_n": carried_before(prev, start)}, beat_gaps_error=why)
     try:
         if log:
             how, served, read = f"the quiet fit's read, {len(log)} updates", log, "long read"

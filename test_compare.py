@@ -4,6 +4,7 @@ import datetime as dt
 import hashlib
 import json
 import pathlib
+import re
 import shutil
 import tempfile
 import unittest
@@ -308,6 +309,15 @@ class Run(unittest.TestCase):
         for new in ("stopped_then_ended_n", "quiet_then_ended_n", "unknown_then_ended_n", "stopped_then_ended_outages_n",
                     "quiet_then_dead_n", "blind_spot"):
             self.assertRegex(text, rf"\b{new}\b")
+
+    def test_old_readings_names_the_compare_py_beside_it(self):
+        # Fieldnotes, 7b3923b3: the table says which version it was checked against; a code change without a new stamp fails here
+        here = pathlib.Path(compare.__file__).parent
+        text = (here / "README.md").read_text(encoding="utf-8")
+        stamped = re.findall(r"last checked on \d{4}-\d{2}-\d{2}, against the `compare.py` whose SHA-256 is `([0-9a-f]{64})`", text)
+        self.assertEqual(len(stamped), 1)
+        code = (here / "compare.py").read_bytes().replace(b"\r\n", b"\n")  # as served; a CRLF checkout hashes the same
+        self.assertEqual(stamped[0], hashlib.sha256(code).hexdigest())
 
 
 class LoadBound(unittest.TestCase):
@@ -663,22 +673,35 @@ class BeatGaps(unittest.TestCase):
                       " updates), which goes back to 2026-10-23T23:00:13Z; see beat_gaps_hole", g["beat_gaps_error"])
         self.assertIsNone(g["beat_gaps_unread_from"])  # gone for good: the next run starts from this run's beat
         # the hole is printed: from the beat no longer read to this run's beat, since none of the stretch is counted
+        # a start that was never carried: the hole says so with carried_n 0
         self.assertEqual((g["beat_gaps_hole"], g["beat_gaps_log_from"], g["beat_gaps_log_margin_n"]),
-                         ({"from_commit": "d955291", "from": None, "to": "2026-10-23T23:15:12Z"}, "2026-10-23T23:00:13Z", None))
+                         ({"from_commit": "d955291", "from": None, "to": "2026-10-23T23:15:12Z", "carried_n": 0},
+                          "2026-10-23T23:00:13Z", None))
         prev = {"beat": {"commit": "d955291", "github_time": "2026-10-23T21:15:12Z"}}
         g = compare.beat_gaps("o/r", None, prev, {"commit": "e8346b4"}, BOUND, log_fetch(activity(self.LOG[3:])))
-        self.assertEqual(g["beat_gaps_hole"], {"from_commit": "d955291", "from": "2026-10-23T21:15:12Z", "to": "2026-10-23T23:15:12Z"})
+        self.assertEqual(g["beat_gaps_hole"], {"from_commit": "d955291", "from": "2026-10-23T21:15:12Z", "to": "2026-10-23T23:15:12Z",
+                                               "carried_n": 0})
         # a carried start is dated by the time carried beside it (Fieldnotes, 0de2b1ca)
         prev = {"beat": {"commit": "eb60748", "github_time": "2026-10-23T23:00:12Z"}, "beat_gaps_unread_from": "d955291",
                 "beat_gaps_unread_from_time": "2026-10-23T21:15:12Z", "beat_gaps_carried_n": 3}
         g = compare.beat_gaps("o/r", None, prev, {"commit": "3069a48"}, BOUND, log_fetch(activity(self.LOG[3:])))
-        self.assertEqual(g["beat_gaps_hole"], {"from_commit": "d955291", "from": "2026-10-23T21:15:12Z", "to": "2026-10-23T23:30:15Z"})
+        # and the hole keeps how many receipts carried it, since this receipt's own count is reset (Fieldnotes, d4d0f772)
+        self.assertEqual(g["beat_gaps_hole"], {"from_commit": "d955291", "from": "2026-10-23T21:15:12Z", "to": "2026-10-23T23:30:15Z",
+                                               "carried_n": 3})
         self.assertEqual((g["beat_gaps"], g["beat_gaps_n"], g["beat_gaps_unread_from"], g["beat_gaps_carried_n"]), (None, None, None, 0))
-        # a receipt written before the time was carried leaves the hole undated; so does a time that is not one
-        for legacy in ({}, {"beat_gaps_unread_from_time": "yesterday"}, {"beat_gaps_unread_from_time": "0001-01-01T00:00:00+01:00"}):
+        # a carried value that is not a commit falls back to the previous receipt's beat, which was never carried: the
+        # count beside the value was for something else
+        prev = dict(prev, beat={"commit": "d955291", "github_time": "2026-10-23T21:15:12Z"}, beat_gaps_unread_from=5)
+        g = compare.beat_gaps("o/r", None, prev, {"commit": "3069a48"}, BOUND, log_fetch(activity(self.LOG[3:])))
+        self.assertEqual((g["beat_gaps_hole"]["from_commit"], g["beat_gaps_hole"]["carried_n"]), ("d955291", 0))
+        # a receipt written before the time was carried leaves the hole undated; so does a time that is not one. Such a
+        # receipt holds no count either, so the hole's is null: carried, for how long unknown, not 0
+        for legacy in ({}, {"beat_gaps_unread_from_time": "yesterday"}, {"beat_gaps_unread_from_time": "0001-01-01T00:00:00+01:00"},
+                       {"beat_gaps_carried_n": 0}, {"beat_gaps_carried_n": True}, {"beat_gaps_carried_n": "3"}):
             prev = dict({"beat": {"commit": "eb60748", "github_time": "2026-10-23T23:00:12Z"}, "beat_gaps_unread_from": "d955291"}, **legacy)
             g = compare.beat_gaps("o/r", None, prev, {"commit": "3069a48"}, BOUND, log_fetch(activity(self.LOG[3:])))
-            self.assertEqual(g["beat_gaps_hole"], {"from_commit": "d955291", "from": None, "to": "2026-10-23T23:30:15Z"})
+            self.assertEqual(g["beat_gaps_hole"], {"from_commit": "d955291", "from": None, "to": "2026-10-23T23:30:15Z", "carried_n": None},
+                             legacy)
         g = self.gaps("d955291", "e8346b4", activity(self.LOG[:4]))
         self.assertIn("is not in the log yet", g["beat_gaps_error"])
         self.assertEqual((g["beat_gaps_log_from"], g["beat_gaps_log_margin_n"], g["beat_gaps_hole"]), ("2026-10-23T20:45:13Z", None, None))
@@ -716,7 +739,23 @@ class BeatGaps(unittest.TestCase):
         # had that beat left the read by the next run, the hole would be dated by the time kept
         log[:] = activity(self.LOG[3:])
         r3 = compare.run(root, env, now=t("2026-10-23T23:20:00Z"), fetch=fetch_at("e8346b4", "2026-10-23T23:15:12Z"))
-        self.assertEqual(r3["beat_gaps_hole"], {"from_commit": "d955291", "from": "2026-10-23T21:15:12Z", "to": "2026-10-23T23:15:12Z"})
+        self.assertEqual(r3["beat_gaps_hole"], {"from_commit": "d955291", "from": "2026-10-23T21:15:12Z", "to": "2026-10-23T23:15:12Z",
+                                                "carried_n": 1})
+        # a second receipt that cannot be built, with no new beat since, carries the same beat again, counted on
+        (root / "bound.json").write_text(json.dumps(dict(BOUND_FILE, state_stale_min="abc")), encoding="utf-8")
+        log[:] = activity(self.LOG)
+        r4 = compare.run(root, env, now=t("2026-10-23T21:35:00Z"), fetch=fetch_at("d955291", "2026-10-23T21:15:12Z"))
+        self.assertEqual((r4["verdict"], r4["beat_gaps_unread_from"], r4["beat_gaps_unread_from_time"], r4["beat_gaps_carried_n"]),
+                         ("error", "d955291", "2026-10-23T21:15:12Z", 2))
+        # and one that finds a hole keeps it, with the count of receipts that carried its start, while it carries its own
+        # beat from 1
+        compare.write(root, r4)
+        log[:] = activity(self.LOG[3:])
+        r5 = compare.run(root, env, now=t("2026-10-23T23:20:00Z"), fetch=fetch_at("e8346b4", "2026-10-23T23:15:12Z"))
+        self.assertEqual(r5["beat_gaps_hole"], {"from_commit": "d955291", "from": "2026-10-23T21:15:12Z", "to": "2026-10-23T23:15:12Z",
+                                                "carried_n": 2})
+        self.assertEqual((r5["verdict"], r5["beat_gaps_unread_from"], r5["beat_gaps_unread_from_time"], r5["beat_gaps_carried_n"]),
+                         ("error", "e8346b4", "2026-10-23T23:15:12Z", 1))
 
     def test_a_failed_read_is_made_up_by_the_next_run(self):
         # run 1 reads too soon after its beat (not yet logged); run 2 starts from where run 1 would have
@@ -1150,7 +1189,7 @@ class FittedRun(unittest.TestCase):
                               log=list(reversed(activity([("2026-10-09T00:15:00Z", "s1"), ("2026-10-09T00:30:00Z", "s2"),
                                                           ("2026-10-09T00:45:00Z", "s3")]))))
         self.assertIn("(the quiet fit's read, 3 updates)", g["beat_gaps_error"])
-        self.assertEqual(g["beat_gaps_hole"], {"from_commit": "s0", "from": None, "to": "2026-10-09T00:45:00Z"})
+        self.assertEqual(g["beat_gaps_hole"], {"from_commit": "s0", "from": None, "to": "2026-10-09T00:45:00Z", "carried_n": 0})
         # a bound with a fixed window makes no long read: one call, as before
         g = compare.beat_gaps("o/r", None, {"beat": {"commit": "s1"}}, {"commit": "s3"}, BOUND,
                               log_fetch(activity([("2026-10-09T00:00:00Z", "s0"), ("2026-10-09T00:15:00Z", "s1"),
@@ -1202,7 +1241,7 @@ class FittedRun(unittest.TestCase):
         compare.write(self.root, self.carried("2026-09-30T12:00:00Z", 40))
         r = self.run_at("2026-10-09T18:00:00Z", "2026-10-09T18:05:00Z", self.LONG, fetch_page=self.broken)
         self.assertEqual(r["beat_gaps_hole"], {"from_commit": f"s{self.LONG.index(t('2026-09-30T12:00:00Z'))}",
-                                               "from": "2026-09-30T12:00:00Z", "to": "2026-10-09T18:00:00Z"})
+                                               "from": "2026-09-30T12:00:00Z", "to": "2026-10-09T18:00:00Z", "carried_n": 40})
         self.assertEqual((r["beat_gaps_unread_from"], r["beat_gaps_unread_from_time"], r["beat_gaps_carried_n"], r["beat_gaps"]),
                          (None, None, 0, None))
         self.assertIn("at 2026-09-30T12:00:00Z) is not among the 99 updates before this run's beat in one call", r["beat_gaps_error"])
@@ -1220,12 +1259,22 @@ class FittedRun(unittest.TestCase):
         self.assertEqual((g["beat_gaps_unread_from"], g["beat_gaps_unread_from_time"], g["beat_gaps_carried_n"]),
                          (prev["beat_gaps_unread_from"], "2026-09-30T12:00:00Z", 41))
         self.assertEqual((g["beat_gaps_reach"], g["beat_gaps_read"], g["beat_gaps_hole"]), (None, None, None))
-        # so is one from a receipt written before the time was carried: there is nothing to date it by
+        # so is one from a receipt written before the time was carried: there is nothing to date it by. Nor is there a
+        # count, so the count is null, not 1, and stays null while the carry lasts: a count from 1 would look exact and
+        # be short, and the hole that ends the carry would print it (Fieldnotes, d4d0f772)
         prev = {k: v for k, v in prev.items() if k not in ("beat_gaps_unread_from_time", "beat_gaps_carried_n")}
         compare.write(self.root, prev)
         r = self.run_at("2026-10-09T18:00:00Z", "2026-10-09T18:05:00Z", self.LONG, fetch_page=self.broken)
         self.assertEqual((r["beat_gaps_hole"], r["beat_gaps_unread_from"], r["beat_gaps_carried_n"], r["beat_gaps_reach"]),
-                         (None, prev["beat_gaps_unread_from"], 1, self.REACH))
+                         (None, prev["beat_gaps_unread_from"], None, self.REACH))
+        compare.write(self.root, dict(r, compared_at="2026-10-09T18:05:00Z"))
+        r = self.run_at("2026-10-09T18:00:00Z", "2026-10-09T18:35:00Z", self.LONG, fetch_page=self.broken)
+        self.assertEqual((r["beat_gaps_unread_from"], r["beat_gaps_carried_n"]), (prev["beat_gaps_unread_from"], None))
+        # the carry ends in a hole when a read works (the start is past the reach): its carried_n is null too
+        compare.write(self.root, dict(r, compared_at="2026-10-09T18:35:00Z"))
+        r = self.run_at("2026-10-09T18:00:00Z", "2026-10-09T18:50:00Z", self.LONG)
+        self.assertEqual((r["beat_gaps_hole"]["from_commit"], r["beat_gaps_hole"]["carried_n"], r["beat_gaps_carried_n"]),
+                         (prev["beat_gaps_unread_from"], None, 0))
 
     def test_a_working_read_counts_only_back_to_the_reach(self):
         # the read stops at a whole page, so it can hold updates older than the reach; a start among them is a hole,
@@ -1239,9 +1288,14 @@ class FittedRun(unittest.TestCase):
                                   "beat": {"commit": older[0]["after"], "github_time": at}})
         r = self.run_at("2026-10-09T18:00:00Z", "2026-10-09T18:05:00Z", self.LONG)
         self.assertIsNone(r["quiet_fit_error"])
-        self.assertEqual(r["beat_gaps_hole"], {"from_commit": older[0]["after"], "from": at, "to": "2026-10-09T18:00:00Z"})
+        self.assertEqual(r["beat_gaps_hole"], {"from_commit": older[0]["after"], "from": at, "to": "2026-10-09T18:00:00Z", "carried_n": 0})
         self.assertIn(f"older than {self.REACH}", r["beat_gaps_error"])
         self.assertEqual((r["beat_gaps"], r["beat_gaps_unread_from"], r["beat_gaps_read"]["by"]), (None, None, "long read"))
+        # the same start carried by 5 receipts and found in a working read: a hole by the log's stamp, carried_n 5
+        compare.write(self.root, dict(self.carried(at, 5), beat_gaps_unread_from=older[0]["after"]))
+        r = self.run_at("2026-10-09T18:00:00Z", "2026-10-09T18:05:00Z", self.LONG)
+        self.assertEqual((r["beat_gaps_hole"], r["beat_gaps_carried_n"], r["beat_gaps_unread_from"]),
+                         ({"from_commit": older[0]["after"], "from": at, "to": "2026-10-09T18:00:00Z", "carried_n": 5}, 0, None))
         # the log's stamp decides, not the commit's date: a branch restored to an old commit logs it anew
         restored = f"s{self.LONG.index(t('2026-10-05T12:00:00Z'))}"
         compare.write(self.root, {"compared_at": "2026-10-05T12:05:00Z", "bound_version": 2,
