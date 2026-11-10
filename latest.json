@@ -1,9 +1,9 @@
 {
- "compared_at": "2026-11-10T12:56:05Z",
- "run_id": "42819957353",
+ "compared_at": "2026-11-10T20:35:07Z",
+ "run_id": "42896724734",
  "run_attempt": "1",
  "event": "schedule",
- "head_sha": "4a0c844997fc01eee9ad4ab177cf23641c6abbd1",
+ "head_sha": "a8d3e34a0640367d7d59094ee20a98b45173e32b",
  "bound_version": 2,
  "bound_sha256": "f996055d22eb51bbfbb1ffc6ffb0ce7144c539201e02ade23125c5181b2f164e",
  "beat": {
@@ -17,7 +17,7 @@
   "kernel_minus_github_s": -1
  },
  "verdict": "unknown",
- "silence_min": 820.9,
+ "silence_min": 1279.9,
  "silence_outside_quiet_min": null,
  "bound_min": 60.0,
  "halted_reason": null,
@@ -47,7 +47,7 @@
  "beat_gaps_error": "LookupError: the beat the gaps start from (94f3f54c3265) is not among the 99 updates before this run's beat in one call, and the quiet fit's read of the log failed (see quiet_fit_error)",
  "beat_gaps_unread_from": "94f3f54c32655745a75c2aeef6bec8721d84ac8d",
  "beat_gaps_unread_from_time": "2026-11-01T02:30:11Z",
- "beat_gaps_carried_n": 35,
+ "beat_gaps_carried_n": 36,
  "beat_gaps_read": {
   "by": "one call",
   "updates": 100
@@ -57,9 +57,9 @@
  "beat_gaps_log_margin_n": null,
  "beat_gaps_hole": null,
  "error": null,
- "previous_receipt_at": "2026-11-10T04:18:00Z",
- "since_previous_receipt_min": 518.1,
- "scheduled_gaps_n": 76,
+ "previous_receipt_at": "2026-11-10T12:56:05Z",
+ "since_previous_receipt_min": 459.0,
+ "scheduled_gaps_n": 77,
  "scheduled_gap_max_min": 637.6,
  "scheduled_gap_max_ended_at": "2026-11-09T22:39:48Z",
  "scheduled_gaps_error": null
