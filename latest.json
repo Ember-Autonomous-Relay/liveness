@@ -1,9 +1,9 @@
 {
- "compared_at": "2026-11-15T11:26:34Z",
- "run_id": "43708932028",
+ "compared_at": "2026-11-15T17:57:11Z",
+ "run_id": "43743957064",
  "run_attempt": "1",
  "event": "schedule",
- "head_sha": "44deaaa02af127676a33b8f5d5189bae7f9dd645",
+ "head_sha": "6c51fbf72b6e4cf05e2f84ef83420f380d961d21",
  "bound_version": 2,
  "bound_sha256": "f996055d22eb51bbfbb1ffc6ffb0ce7144c539201e02ade23125c5181b2f164e",
  "beat": {
@@ -17,8 +17,8 @@
   "kernel_minus_github_s": -1
  },
  "verdict": "stopped",
- "silence_min": 1541.4,
- "silence_outside_quiet_min": 1541.4,
+ "silence_min": 1932.0,
+ "silence_outside_quiet_min": 1932.0,
  "bound_min": 60.0,
  "halted_reason": null,
  "quiet_utc": [],
@@ -68,9 +68,9 @@
  "beat_gaps_log_margin_n": null,
  "beat_gaps_hole": null,
  "error": null,
- "previous_receipt_at": "2026-11-15T03:00:31Z",
- "since_previous_receipt_min": 506.1,
- "scheduled_gaps_n": 94,
+ "previous_receipt_at": "2026-11-15T11:26:34Z",
+ "since_previous_receipt_min": 390.6,
+ "scheduled_gaps_n": 95,
  "scheduled_gap_max_min": 637.6,
  "scheduled_gap_max_ended_at": "2026-11-09T22:39:48Z",
  "scheduled_gaps_error": null
